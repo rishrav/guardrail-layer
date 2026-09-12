@@ -139,3 +139,36 @@ Format:
   - **User input:** allowed, because the user is the principal and their later tool calls are still screened.
 - **Why the SDK caches tiers (`GET /v1/policy`):** Without them, an outage forces a choice between "deny everything", which breaks read-only agents, and "allow everything", which is an easy bypass (knock the gateway over, then act). Caching tiers gives graded behavior without trusting the model.
 - **Tradeoff:** A policy change during an outage isn't seen until the next refresh.
+
+---
+
+## 2026-09-12: Phase 3 (SDK Middleware + Demo Agent)
+
+### S-006: Verified the LangChain middleware API before writing against it
+- **Risk:** The plan assumed LangChain 1.x `create_agent` and middleware hooks, which move quickly.
+- **What I did:** Installed `langchain 1.4.0` / `langchain-core 1.6.3` / `langgraph 1.2.11` in a throwaway venv and inspected the signatures.
+  - `AgentMiddleware.wrap_tool_call(request, handler)` / `awrap_tool_call`.
+  - `ToolCallRequest` fields: `tool_call`, `tool`, `state`, `runtime`.
+  - `before_agent(state, runtime)`.
+- I then ran a probe agent with a scripted model and a denying middleware, and confirmed that returning a `ToolMessage` without calling `handler` short-circuits the tool: `executed == []`.
+- **Outcome:** No guessing. Both the sync and async hooks are implemented, because an agent invoked with `ainvoke` only calls the `a*` variants.
+
+### D-012: Model the worst case with a scripted, fully compromised agent
+- **Context:** A benchmark that samples a real LLM mixes two variables, "did the model fall for it?" and "did the guardrail stop it?", and gives noisy, unreproducible numbers.
+- **Choice:** `ReactiveChatModel` is a deterministic chat model whose policy function *obeys every instruction it reads*, including injected ones. The guardrail is measured against that worst case. Live-LLM runs remain an optional extra mode.
+- **Why:** The guardrail must not depend on the model being smart enough to resist. If it contains a model that always complies, it contains a real one, and CI results are bit-for-bit reproducible.
+
+### D-013: Keyword retriever instead of pgvector for the demo corpus
+- **Tradeoff:**
+  - **Gave up:** a realistic semantic-search RAG path.
+  - **Got:** deterministic retrieval with no embedding model to download, and a guaranteed hit on the poisoned invoice for relevant queries.
+- The guardrail sits *after* retrieval, so how documents were found doesn't affect what it has to catch. pgvector remains in the compose image if a semantic path is added later.
+
+### D-014: Screen at both the retriever and the tool output
+- `GuardedRetriever` screens each chunk and drops only poisoned ones, which is fine-grained and keeps the useful context. `GuardrailMiddleware` also screens every tool output, since not all untrusted content comes from a retriever (web fetches, API responses).
+- **Tradeoff:** RAG content gets screened twice through `search_docs`, which costs extra latency on the classifier path. The second screen sees already-filtered text, so it's usually a cache hit or a clean pass. `screen_tool_outputs=False` turns it off where the retriever is the only untrusted source.
+
+### D-015: The agent sees denials as tool errors, not exceptions
+- A DENY becomes `ToolMessage(status="error")` with a short reason and "do not retry; tell the user".
+- **Why:** Raising would crash the agent loop and hide the decision from the user. A tool error lets the agent explain what happened.
+- **Tradeoff:** The reason text reaches the model, and an attacker who controls the context could read it to probe the policy. So the messages carry policy codes only; classifier evidence and scores never go to the model.
