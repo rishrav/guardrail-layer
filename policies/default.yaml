@@ -1,0 +1,99 @@
+# Guardrail policy: the trusted source of truth for tools, risk tiers and argument rules.
+# Tool descriptions here (not runtime docstrings) are what the adjudicator judges see.
+version: "2026-09-12.1"
+
+defaults:
+  unknown_tool: deny          # tools not listed here are always denied
+  allow_extra_args: false
+
+allowlists:
+  email_domains: [company.com]
+  http_domains: [api.company.com, hooks.company.com]
+
+budgets:
+  transfer_amount_per_session: 1000
+  emails_per_session: 10
+  deletes_per_session: 50
+
+tools:
+  search_docs:
+    tier: 0
+    description: Search the internal knowledge base and return matching passages.
+    args:
+      query: {type: string, required: true, max_length: 500}
+
+  get_weather:
+    tier: 0
+    description: Get the current weather for a city.
+    args:
+      city: {type: string, required: true, max_length: 100}
+
+  create_note:
+    tier: 1
+    description: Create a private note for the user.
+    args:
+      title: {type: string, required: true, max_length: 200}
+      body: {type: string, max_length: 10000}
+
+  send_email:
+    tier: 2
+    description: Send an email on the user's behalf.
+    fallback: create_draft
+    budget: emails_per_session
+    args:
+      to:
+        type: email
+        required: true
+        sensitive: true
+        allowlist: email_domains
+        # Recipient passes if allowlisted OR provably requested by the user (trusted provenance).
+        allowlist_mode: or_trusted
+        novel: fail
+      subject: {type: string, max_length: 200}
+      body: {type: string, max_length: 20000}
+
+  http_post:
+    tier: 2
+    description: POST a JSON payload to an approved internal endpoint.
+    fallback: build_only
+    args:
+      url: {type: url, required: true, sensitive: true, allowlist: http_domains, allowlist_mode: strict}
+      payload: {type: object}
+
+  run_sql:
+    tier: 2
+    description: Run a read-only SQL query against the analytics database.
+    fallback: explain
+    args:
+      query:
+        type: string
+        required: true
+        max_length: 5000
+        deny_patterns:
+          - '(?i)\b(drop|delete|truncate|alter|update|insert|grant|revoke|create)\b'
+          - ';\s*\S'   # stacked statements
+
+  transfer_funds:
+    tier: 3
+    description: Transfer money from the user's account to a destination account.
+    fallback: simulate
+    budget: transfer_amount_per_session
+    args:
+      account: {type: account, required: true, sensitive: true, novel: fail}
+      amount: {type: number, required: true, min: 0.01, max: 5000, sensitive: true, novel: allow_within_budget}
+      memo: {type: string, max_length: 140}
+
+  delete_records:
+    tier: 3
+    description: Delete records from a table by id.
+    fallback: soft_delete
+    budget: deletes_per_session
+    args:
+      table: {type: string, required: true, pattern: '^[a-z_]{1,64}$'}
+      ids: {type: array, required: true, max_items: 50}
+
+  exec_shell:
+    tier: 3
+    description: Execute a shell command on the agent host.
+    args:
+      command: {type: string, required: true, max_length: 1000}
