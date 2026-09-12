@@ -35,6 +35,10 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
 ignore = ["S101"]
 
+[tool.ruff.lint.per-file-ignores]
+# Signature regexes read better unbroken than split mid-pattern.
+"gateway/src/gateway/pipeline/heuristics.py" = ["E501"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["gateway", "guardrail_sdk", "agent_demo", "benchmarks"]
 
