@@ -7,6 +7,12 @@ dependencies = [
     "httpx>=0.28",
 ]
 
+[project.optional-dependencies]
+langchain = [
+    "langchain>=1.4",
+    "langchain-core>=1.6",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
