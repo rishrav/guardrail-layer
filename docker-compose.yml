@@ -12,8 +12,11 @@ x-gateway-base: &gateway-base
     GUARDRAIL_POLICY_PATH: /app/policies/default.yaml
     # macOS: Ollama runs natively on the host (Docker has no Metal GPU access).
     MODEL_BASE_URL: ${MODEL_BASE_URL_DOCKER:-http://host.docker.internal:11434}
+    INJECTION_MODEL_DIR: /app/models/weights/deberta-v3-prompt-injection-v2
+    LLM_CLASSIFIER_ENABLED: ${LLM_CLASSIFIER_ENABLED:-true}
   volumes:
     - ./policies:/app/policies:ro
+    - ./models:/app/models:ro
   extra_hosts:
     - "host.docker.internal:host-gateway"
 

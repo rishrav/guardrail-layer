@@ -82,6 +82,13 @@ async def record_tool_call(
     return call
 
 
+async def set_session_taint(db: AsyncSession, session_id: uuid.UUID, level: str) -> None:
+    """Mirror the Redis taint level onto the session row for audit queries."""
+    await db.execute(
+        update(AgentSession).where(AgentSession.id == session_id).values(taint_level=level)
+    )
+
+
 async def ensure_session(
     db: AsyncSession, session_id: uuid.UUID, agent_id: str, user_id: str | None = None
 ) -> AgentSession:

@@ -23,11 +23,16 @@ class Settings(BaseSettings):
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
 
     model_base_url: str = Field("http://localhost:11434", alias="MODEL_BASE_URL")
+    model_timeout_s: float = Field(30.0, alias="MODEL_TIMEOUT_S")
     judge_model: str = Field("qwen3:8b", alias="JUDGE_MODEL")
     guardian_model: str = Field("granite3-guardian:2b", alias="GUARDIAN_MODEL")
-    prompt_guard_model: str = Field(
-        "meta-llama/Llama-Prompt-Guard-2-86M", alias="PROMPT_GUARD_MODEL"
+
+    injection_model_dir: str = Field(
+        "models/weights/deberta-v3-prompt-injection-v2", alias="INJECTION_MODEL_DIR"
     )
+    llm_classifier_enabled: bool = Field(True, alias="LLM_CLASSIFIER_ENABLED")
+    ambiguous_low: float = Field(0.3, alias="DETECTION_AMBIGUOUS_LOW")
+    ambiguous_high: float = Field(0.8, alias="DETECTION_AMBIGUOUS_HIGH")
 
     @property
     def fail_open_tiers(self) -> frozenset[int]:
