@@ -1,0 +1,13 @@
+# Extends the default gitleaks rules. Only exact, deliberately fake credentials are allowed:
+# they are attack payloads used by tests and the adversarial benchmark to prove the
+# guardrail blocks credential exfiltration. Real secrets still fail the hook.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake AWS keys used as exfiltration payloads in tests and benchmark cases"
+regexTarget = "match"
+regexes = [
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''AKIAABCDEFGHIJKLMNOP''',
+]
