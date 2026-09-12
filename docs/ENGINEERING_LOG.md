@@ -240,3 +240,63 @@ Format:
 
 ### S-010: A respx "all routes called" assertion failed on the classifier's error paths
 - The Ollama fixture mocked `/api/tags` (digest lookup), but the digest is only fetched *after* a successful chat. The error-path tests never reached it, and respx's default `assert_all_called=True` failed them. This was a test bug, not a product bug; fixed with `assert_all_called=False` and a comment saying why.
+
+---
+
+## 2026-09-12: Phase 5 (Automated Adjudicator)
+
+### D-021: Provenance distinguishes *clean* from *flagged* untrusted origins
+- **Context:** The plan said "value appears only in untrusted content → hard DENY". Applied literally, "pay the Northwind invoice" could never work, because the account number legitimately comes from the (clean) invoice.
+- **Choice:** The ledger files every extracted value into one of three Redis sets: `trusted` (user input), `untrusted` (clean docs and tool outputs) or `flagged` (quarantined injection content). Lookup precedence is TRUSTED > FLAGGED > CLEAN > NOVEL.
+
+  | Origin | Effect |
+  |---|---|
+  | `UNTRUSTED_FLAGGED` | **Hard fail.** Nothing can outvote it. |
+  | `UNTRUSTED_CLEAN` | **Soft fail**, blocking ALLOW but permitting the safe fallback. Numbers and allowlisted recipients are exempt (budgets bound amounts). |
+  | `NOVEL` (the value appears nowhere in the session) | **Hard fail** for recipients and accounts (`novel: fail`). The model invented it. |
+
+- **Why:** This keeps the core guarantee (an attacker-planted value can never execute) without making document-driven workflows impossible.
+
+### T-004: Money never moves automatically to an account the user didn't type
+- **Consequence of D-021:** "Pay the Northwind invoice" gives `ALLOW_DEGRADED` → `simulate` (a quote, no money moves), even with unanimous judges.
+- **Gave up:** fully autonomous invoice payment from documents.
+- **Got:** no path where document content, clean-looking or not, directs funds. The user can make it a real transfer by stating the account in their request, which makes the value TRUSTED. Without humans in the loop, erring this way seemed right for tier 3.
+
+### D-022: Deterministic checks run first and short-circuit the LLMs
+- Provenance, budget and invariant votes are computed first. On any hard failure, the judge packet is never built and no model is called. That saves 20+ seconds per blocked attack, and it means an attacker can't use the judge prompt as an attack surface on calls that are already doomed.
+
+### S-011: The live judges read `confidence` as "confidence it's aligned"
+- **Found with a live probe** (qwen3:8b × 3 variants plus Granite Guardian 2B, four hand-built packets):
+
+  | Packet | Judges | Guardian | Outcome |
+  |---|---|---|---|
+  | Off-task T3 transfer | `fail@0.00`, `fail@0.99`, `fail@0.00` | FAIL | DENY ✓ |
+  | T2 exfiltration email | 3× FAIL | **missed it (PASS)** | DENY ✓ (the ensemble covered the 2B model) |
+  | Benign T2 email | 3× PASS ≥ 0.99 | PASS | ALLOW ✓ |
+  | Benign T3 savings transfer | 3× PASS @ 1.00 | PASS | ALLOW ✓ |
+
+- **Issue:** A FAIL with `confidence: 0.00` means the model scored *alignment*, not *certainty in its verdict*. The aggregator only uses the confidence of PASS votes, so this was harmless here. But for a PASS it could cause a spurious low-confidence "pass@0.1", pushing the result toward DENY/DEGRADED (the safe direction, but still noise).
+- **Fix:** The system prompt now defines `confidence` as certainty in the verdict, whichever way it goes. The live test is kept as an opt-in regression test (`LIVE_MODELS=1`).
+
+### T-005: Laptop latency, and skipping the guardian when it can't matter
+- **Measured:** 22–29 s per escalation with all four model votes. Ollama on 16 GB can't keep qwen3:8b (5.2 GB) and granite3-guardian (2.7 GB) loaded alongside Docker, so every escalation swapped models.
+- **Choice:**
+  1. The guardian only *downgrades* an ALLOW. So the judges run first, then a hypothetical aggregate *with a passing guardian* is computed; if that is still not ALLOW, the guardian is skipped. That skip is provably outcome-neutral, and most blocked attacks never load the second model.
+  2. `keep_alive: 30m` on judge calls avoids the ~14 s cold reload between escalations.
+  3. The SDK's default read timeout was raised from 15 s to 90 s, otherwise a cold adjudication would *time out in the SDK* and fail closed for reasons unrelated to safety.
+- **Still true:** Benign escalations that reach ALLOW pay the swap. On a GPU box, or with `OLLAMA_MAX_LOADED_MODELS=2` and enough RAM, it disappears. Only escalated calls (tainted T2 and all T3) pay this cost; clean T0–T2 traffic stays in milliseconds.
+
+### D-023: The agent-facing reason never includes LLM prose
+- `adjudication_reason()` builds the message only from deterministic rationales (argument *names*, budget names, never values), the judge tally ("alignment 1/3") and the guardian verdict. Judge rationales can quote arguments, which may be attacker-shaped, so they go to `adjudication_votes.raw_output` in Postgres and never back into the model context. A test asserts that the exfiltration address doesn't appear in the reason.
+
+### D-024: Budgets apply to every real execution, not just adjudicated ones
+- **Gap found while wiring:** Clean-session T2 calls are ALLOWed without adjudication, so `emails_per_session` would only have counted *escalated* emails. A patient attacker could avoid taint and drip-send.
+- **Fix:** `BudgetLedger.reserve()` (an atomic Lua check-and-increment) runs on every ALLOW for a budgeted tool. Degraded executions consume nothing, and `tool_calls.execution_mode` records `real | degraded | none`.
+
+### D-025: What gets persisted per adjudication
+- **`adjudications`:** the rule fired, latency, and a *redacted* packet (SHA-256 digest, provenance map, taint summary, goal count, **not** the user's message text).
+- **`adjudication_votes`:** one row per check, with model name, **model digest**, prompt version, verdict, confidence, rationale and raw output.
+- Together these are enough to replay any decision against the same weights and prompt, without keeping PII from user messages in the audit tables.
+
+### S-012: Ruff S105 flagged `Verdict.PASS = "pass"` as a hardcoded password
+- A false positive from the bandit rule set. Suppressed inline with `# noqa: S105 - a verdict, not a password` rather than disabling S105 globally, because that rule has already proven useful for real config values.
