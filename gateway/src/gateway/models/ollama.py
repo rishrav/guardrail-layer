@@ -63,6 +63,7 @@ class OllamaClient:
             "format": schema,
             "stream": False,
             "think": False,
+            "keep_alive": "30m",  # avoid ~14 s cold reloads between escalations
             "options": {"temperature": temperature, "seed": seed},
         }
         try:
