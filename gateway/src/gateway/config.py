@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     ambiguous_low: float = Field(0.3, alias="DETECTION_AMBIGUOUS_LOW")
     ambiguous_high: float = Field(0.8, alias="DETECTION_AMBIGUOUS_HIGH")
 
+    adjudicator_enabled: bool = Field(True, alias="ADJUDICATOR_ENABLED")
+    adjudicator_models_enabled: bool = Field(True, alias="ADJUDICATOR_MODELS_ENABLED")
+    adjudicator_timeout_s: float = Field(60.0, alias="ADJUDICATOR_TIMEOUT_S")
+    guardian_risk: str = Field("unethical_behavior", alias="GUARDIAN_RISK")
+
     @property
     def fail_open_tiers(self) -> frozenset[int]:
         """Risk tiers allowed to proceed when the gateway itself is unreachable."""

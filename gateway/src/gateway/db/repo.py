@@ -12,10 +12,17 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.db.hashchain import GENESIS_HASH, ChainVerification, compute_row_hash, verify_chain
-from gateway.db.models import AgentSession, ScreeningEvent, ToolCall
+from gateway.db.models import (
+    Adjudication,
+    AdjudicationVote,
+    AgentSession,
+    ScreeningEvent,
+    ToolCall,
+)
 from gateway.db.models import Policy as PolicyRow
 
 if TYPE_CHECKING:
+    from gateway.adjudicator.service import AdjudicationResult
     from gateway.pipeline.policy import Policy
 
 # Arbitrary constant used as the Postgres advisory-lock key for serializing chain appends.
@@ -69,17 +76,61 @@ async def record_tool_call(
     tool_name: str,
     risk_tier: int,
     args: dict[str, Any],
+    execution_mode: str = "none",
 ) -> ToolCall:
     call = ToolCall(
         event_id=event_id,
         tool_name=tool_name,
         risk_tier=risk_tier,
         args=args,
-        execution_mode="none",
+        execution_mode=execution_mode,
     )
     db.add(call)
     await db.flush()
     return call
+
+
+async def record_adjudication(
+    db: AsyncSession, *, tool_call_id: uuid.UUID, result: AdjudicationResult
+) -> Adjudication:
+    """Persist the adjudication and every vote (model digest + prompt version) for replay."""
+    packet = result.packet
+    row = Adjudication(
+        tool_call_id=tool_call_id,
+        final_decision=str(result.decision),
+        rule_fired=result.rule,
+        # The user's message text is deliberately not stored; the digest pins the packet.
+        packet_redacted=(
+            {
+                "digest": packet.digest(),
+                "tool": packet.tool_name,
+                "provenance": packet.provenance,
+                "taint": packet.taint,
+                "goal_count": len(packet.user_goals),
+            }
+            if packet
+            else {}
+        ),
+        latency_ms=result.latency_ms,
+    )
+    db.add(row)
+    await db.flush()
+    for vote in result.votes:
+        db.add(
+            AdjudicationVote(
+                adjudication_id=row.id,
+                check_name=vote.check,
+                model_name=vote.model,
+                model_digest=vote.model_digest,
+                prompt_version=vote.prompt_version,
+                verdict=vote.verdict.value,
+                confidence=vote.confidence,
+                raw_output={"rationale": vote.rationale, "hard": vote.hard, **vote.raw},
+                latency_ms=vote.latency_ms,
+            )
+        )
+    await db.flush()
+    return row
 
 
 async def set_session_taint(db: AsyncSession, session_id: uuid.UUID, level: str) -> None:

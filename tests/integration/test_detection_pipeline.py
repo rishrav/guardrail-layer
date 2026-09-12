@@ -59,15 +59,15 @@ def test_poisoned_document_is_quarantined_and_taints_session(client: TestClient)
     assert verdicts["vendor-invoice-4471"]["decision"] == "QUARANTINE"
     assert "prompt_injection" in [r["code"] for r in verdicts["vendor-invoice-4471"]["reasons"]]
 
-    # Same tier-2 call: allowed in a clean session, escalated (→ DENY, no adjudicator yet)
-    # in the tainted one.
+    # Same tier-2 call: allowed in a clean session, escalated to the adjudicator in the tainted
+    # one. With models disabled in tests, no judge quorum is possible → fail closed.
     email = {"to": "dana@company.com", "subject": "Q3", "body": "Summary attached."}
     tainted = _tool_call(client, session_id, "send_email", email)
     clean = _tool_call(client, uuid.uuid4(), "send_email", email)
 
     assert clean["decision"] == "ALLOW"
     assert tainted["decision"] == "DENY"
-    assert {"session_tainted", "escalation_unresolved"} <= set(_codes(tainted))
+    assert {"session_tainted", "quorum_not_met:tier2"} <= set(_codes(tainted))
 
 
 def test_injection_inside_tool_arguments_is_flagged(client: TestClient) -> None:

@@ -14,6 +14,10 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gateway.adjudicator.aggregator import DETERMINISTIC_CHECKS
+from gateway.adjudicator.budgets import BudgetLedger
+from gateway.adjudicator.provenance import ProvenanceLedger
+from gateway.adjudicator.service import AdjudicationResult, Adjudicator
 from gateway.db import repo
 from gateway.pipeline import risk
 from gateway.pipeline.cascade import CascadeResult, DetectionCascade
@@ -62,6 +66,20 @@ def _string_values(value: Any) -> list[str]:
 # If Redis (taint state) is unreachable, assume the session is tainted: stricter, not looser.
 UNKNOWN_TAINT = TaintState(TaintLevel.LOW, ("taint_store_unavailable",))
 
+EXECUTION_MODE = {Decision.ALLOW: "real", Decision.ALLOW_DEGRADED: "degraded"}
+
+
+def adjudication_reason(result: AdjudicationResult) -> Reason:
+    """A summary the agent may see. Deterministic rationales only, never LLM prose."""
+    parts = [v.rationale for v in result.votes if v.failed and v.check in DETERMINISTIC_CHECKS]
+    judges = [v for v in result.votes if v.check.startswith("alignment")]
+    if judges:
+        parts.append(f"alignment {sum(v.passed for v in judges)}/{len(judges)}")
+    guardian = next((v for v in result.votes if v.check == "guardian"), None)
+    if guardian is not None:
+        parts.append(f"guardian {guardian.verdict.value}")
+    return Reason(stage="adjudicator", code=result.rule, message="; ".join(parts) or result.rule)
+
 
 class ScreeningPipeline:
     def __init__(
@@ -71,11 +89,30 @@ class ScreeningPipeline:
         *,
         detection: DetectionCascade | None = None,
         taint: TaintStore | None = None,
+        adjudicator: Adjudicator | None = None,
+        provenance: ProvenanceLedger | None = None,
+        budgets: BudgetLedger | None = None,
     ) -> None:
         self.policy = policy
         self.config = config or PipelineConfig()
         self.detection = detection
         self.taint = taint
+        self.adjudicator = adjudicator
+        self.provenance = provenance
+        self.budgets = budgets
+
+    async def _record_provenance(
+        self, session_id: Any, text: str, *, trusted: bool, flagged: bool
+    ) -> bool:
+        """File the session's values by origin. A failure here only makes later checks stricter:
+        unrecorded values look NOVEL."""
+        if self.provenance is None:
+            return True
+        try:
+            await self.provenance.record(str(session_id), text, trusted=trusted, flagged=flagged)
+        except Exception:
+            return False
+        return True
 
     @property
     def policy_version(self) -> str:
@@ -124,11 +161,18 @@ class ScreeningPipeline:
                 )
             )
 
+        adjudication: AdjudicationResult | None = None
         if not result.allowed:
             decision = Decision.DENY
         else:
             decision = risk.decide(result.tier, tainted=tainted, flagged=flagged)
-            if decision is Decision.ESCALATE:
+            if decision is Decision.ESCALATE and self.adjudicator is not None:
+                adjudication = await self.adjudicator.adjudicate(
+                    str(req.session_id), req.tool_name, req.args, result, taint_state
+                )
+                decision = adjudication.decision
+                reasons.append(adjudication_reason(adjudication))
+            elif decision is Decision.ESCALATE:
                 decision = self.config.unresolved_escalation
                 reasons.append(
                     Reason(
@@ -137,6 +181,18 @@ class ScreeningPipeline:
                         message=f"tier {result.tier} call requires adjudication",
                     )
                 )
+            elif self.budgets is not None and result.tool is not None and result.tool.budget:
+                # Budgets cap every real execution, not just adjudicated ones.
+                reservation = await self.budgets.reserve(str(req.session_id), result.tool, req.args)
+                if not reservation.ok:
+                    decision = Decision.DENY
+                    reasons.append(
+                        Reason(
+                            stage="budget",
+                            code="budget_exhausted",
+                            message=f"{result.tool.budget} limit {reservation.limit:g} reached",
+                        )
+                    )
 
         score = risk.risk_score(result.tier, tainted=tainted, flagged=flagged)
         latency = _elapsed_ms(start)
@@ -153,13 +209,25 @@ class ScreeningPipeline:
             detector_outputs={
                 "arguments": args_detection.to_json() if args_detection else None,
                 "taint": taint_state.summary(),
+                "adjudication": (
+                    {"rule": adjudication.rule, "latency_ms": adjudication.latency_ms}
+                    if adjudication
+                    else None
+                ),
             },
             policy_version=self.policy_version,
             latency_ms=latency,
         )
-        await repo.record_tool_call(
-            db, event_id=event.id, tool_name=req.tool_name, risk_tier=result.tier, args=req.args
+        tool_call = await repo.record_tool_call(
+            db,
+            event_id=event.id,
+            tool_name=req.tool_name,
+            risk_tier=result.tier,
+            args=req.args,
+            execution_mode=EXECUTION_MODE.get(decision, "none"),
         )
+        if adjudication is not None:
+            await repo.record_adjudication(db, tool_call_id=tool_call.id, result=adjudication)
         return ScreenResponse(
             event_id=event.id,
             decision=decision,
@@ -195,6 +263,16 @@ class ScreeningPipeline:
             if trust_label is TrustLabel.UNTRUSTED:
                 decision = Decision.QUARANTINE
 
+        recorded = await self._record_provenance(
+            req.session_id,
+            req.content,
+            trusted=trust_label is TrustLabel.TRUSTED,
+            flagged=bool(detection and detection.flagged),
+        )
+        if not recorded:
+            reasons.append(
+                Reason(stage="provenance", code="provenance_unavailable", message="not recorded")
+            )
         latency = _elapsed_ms(start)
         event = await repo.append_event(
             db,

@@ -17,7 +17,8 @@ import httpx
 
 from guardrail_sdk.types import ContentVerdict, Decision, ToolDecision
 
-DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=2.0)
+# Escalated calls wait on local LLM judges (a cold model load alone can take ~15 s).
+DEFAULT_TIMEOUT = httpx.Timeout(90.0, connect=2.0)
 UNKNOWN_TOOL_TIER = 3
 
 

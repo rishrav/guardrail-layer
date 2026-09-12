@@ -72,11 +72,11 @@ def test_non_allowlisted_url_is_denied(client: TestClient) -> None:
     assert "not_allowlisted" in _codes(resp)
 
 
-def test_tier3_fails_closed_without_adjudicator(client: TestClient) -> None:
+def test_tier3_transfer_to_invented_account_is_denied_by_provenance(client: TestClient) -> None:
     resp = _tool_call(client, "transfer_funds", {"account": "ACC-998877", "amount": 25})
     body = resp.json()
     assert body["decision"] == "DENY" and body["risk_tier"] == 3
-    assert "escalation_unresolved" in _codes(resp)
+    assert "hard_fail:provenance" in _codes(resp)
     assert body["fallback"] == "simulate"
 
 

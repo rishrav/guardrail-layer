@@ -7,6 +7,11 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from gateway import __version__
+from gateway.adjudicator.alignment import AlignmentJudge
+from gateway.adjudicator.budgets import BudgetLedger
+from gateway.adjudicator.guardian import Guardian
+from gateway.adjudicator.provenance import ProvenanceLedger
+from gateway.adjudicator.service import Adjudicator
 from gateway.api import audit, health, policy, screen
 from gateway.cache.redis import get_redis
 from gateway.config import Settings, get_settings
@@ -62,10 +67,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await db.commit()
 
     ollama = OllamaClient(settings.model_base_url, timeout_s=settings.model_timeout_s)
+    redis = get_redis()
+    provenance = ProvenanceLedger(redis)
+    budgets = BudgetLedger(redis, active_policy.document)
+    adjudicator = None
+    if settings.adjudicator_enabled:
+        judge = guardian = None
+        if settings.adjudicator_models_enabled:
+            judge = AlignmentJudge(ollama, settings.judge_model)
+            guardian = Guardian(ollama, settings.guardian_model, settings.guardian_risk)
+        adjudicator = Adjudicator(
+            active_policy,
+            provenance,
+            budgets,
+            judge,
+            guardian,
+            llm_timeout_s=settings.adjudicator_timeout_s,
+        )
     app.state.pipeline = ScreeningPipeline(
         active_policy,
         detection=await build_detection(settings, active_policy, ollama),
-        taint=TaintStore(get_redis()),
+        taint=TaintStore(redis),
+        adjudicator=adjudicator,
+        provenance=provenance,
+        budgets=budgets,
     )
     try:
         yield
