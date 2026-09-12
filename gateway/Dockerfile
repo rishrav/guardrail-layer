@@ -13,6 +13,8 @@ WORKDIR /app
 # Dependency layer first so code edits don't reinstall everything.
 COPY pyproject.toml uv.lock .python-version ./
 COPY gateway/pyproject.toml gateway/pyproject.toml
+# uv needs every workspace member's manifest to resolve the lockfile.
+COPY sdk/pyproject.toml sdk/pyproject.toml
 RUN uv sync --frozen --no-dev --package guardrail-gateway --no-install-workspace
 
 COPY gateway gateway

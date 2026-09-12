@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "guardrail-gateway",
     "guardrail-layer",
+    "guardrail-sdk",
 ]
 
 [[package]]
@@ -331,6 +332,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "guardrail-gateway" },
+    { name = "guardrail-sdk" },
 ]
 
 [package.dev-dependencies]
@@ -345,7 +347,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "guardrail-gateway", editable = "gateway" }]
+requires-dist = [
+    { name = "guardrail-gateway", editable = "gateway" },
+    { name = "guardrail-sdk", editable = "sdk" },
+]
 
 [package.metadata.requires-dev]
 dev = [
@@ -357,6 +362,17 @@ dev = [
     { name = "respx", specifier = ">=0.21" },
     { name = "ruff", specifier = ">=0.8" },
 ]
+
+[[package]]
+name = "guardrail-sdk"
+version = "0.1.0"
+source = { editable = "sdk" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
 
 [[package]]
 name = "h11"
