@@ -1,6 +1,46 @@
 name: guardrail
 
+x-gateway-base: &gateway-base
+  build:
+    context: .
+    dockerfile: gateway/Dockerfile
+  image: guardrail-gateway:dev
+  environment:
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-guardrail}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-guardrail}
+    REDIS_URL: redis://redis:6379/0
+    GUARDRAIL_API_KEY: ${GUARDRAIL_API_KEY:-change-me-local-dev-key}
+    GUARDRAIL_POLICY_PATH: /app/policies/default.yaml
+    # macOS: Ollama runs natively on the host (Docker has no Metal GPU access).
+    MODEL_BASE_URL: ${MODEL_BASE_URL_DOCKER:-http://host.docker.internal:11434}
+  volumes:
+    - ./policies:/app/policies:ro
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
 services:
+  migrate:
+    <<: *gateway-base
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  gateway:
+    <<: *gateway-base
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:
