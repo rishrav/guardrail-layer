@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.adjudicator.aggregator import DETERMINISTIC_CHECKS
-from gateway.adjudicator.budgets import BudgetLedger
+from gateway.adjudicator.budgets import BudgetLedger, invariant_vote
 from gateway.adjudicator.provenance import ProvenanceLedger
 from gateway.adjudicator.service import AdjudicationResult, Adjudicator
 from gateway.db import repo
@@ -171,21 +171,28 @@ class ScreeningPipeline:
                 and self.adjudicator is not None
                 and result.tool is not None
                 and result.tier >= 2
-                and result.tool.sensitive_args
             ):
-                # An untainted session doesn't prove where a recipient, URL or account came from:
-                # polite injections evade detection (S-017). The deterministic provenance check
-                # costs milliseconds, so it gates every sensitive tier-2+ call.
-                precheck = await self.adjudicator.provenance_vote(
-                    str(req.session_id), result.tool, req.args, set(result.deferred_allowlist_args)
-                )
-                if precheck.failed:
+                # A clean session doesn't prove the arguments are safe. Detection misses polite
+                # injections (S-017) and may be bypassed entirely (S-018), so the millisecond
+                # deterministic checks gate every tier-2+ call, not only escalated ones.
+                prechecks = [invariant_vote(result.tool, req.args)]
+                if result.tool.sensitive_args:
+                    prechecks.append(
+                        await self.adjudicator.provenance_vote(
+                            str(req.session_id),
+                            result.tool,
+                            req.args,
+                            set(result.deferred_allowlist_args),
+                        )
+                    )
+                failing = [vote for vote in prechecks if vote.failed]
+                if failing:
                     decision = Decision.ESCALATE
                     reasons.append(
                         Reason(
-                            stage="provenance",
-                            code="untrusted_argument_origin",
-                            message=precheck.rationale,
+                            stage="precheck",
+                            code="deterministic_precheck_failed",
+                            message="; ".join(f"{v.check}: {v.rationale}" for v in failing),
                         )
                     )
             if decision is Decision.ESCALATE and self.adjudicator is not None:

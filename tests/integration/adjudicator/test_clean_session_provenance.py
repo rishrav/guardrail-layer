@@ -86,3 +86,20 @@ def test_allowlisted_colleague_from_document_stays_on_the_fast_path(client: Test
     )
     body = _email(client, session, "dana@company.com")
     assert body["decision"] == "ALLOW"
+
+
+def test_credential_to_trusted_recipient_is_blocked_without_detection_help(
+    client: TestClient,
+) -> None:
+    """S-018: invariants must not depend on detection having escalated the call first."""
+    session = _setup(client, "Email the deploy notes to dana@company.com", [])
+    body = client.post(
+        "/v1/screen/tool-call",
+        json={
+            **session,
+            "tool_name": "send_email",
+            "args": {"to": "dana@company.com", "body": "key: AKIAIOSFODNN7EXAMPLE"},
+        },
+    ).json()
+    assert body["decision"] == "DENY"
+    assert "hard_fail:invariants" in [r["code"] for r in body["reasons"]]
