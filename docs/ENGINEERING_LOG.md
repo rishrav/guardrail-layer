@@ -300,3 +300,169 @@ Format:
 
 ### S-012: Ruff S105 flagged `Verdict.PASS = "pass"` as a hardcoded password
 - A false positive from the bandit rule set. Suppressed inline with `# noqa: S105 - a verdict, not a password` rather than disabling S105 globally, because that rule has already proven useful for real config values.
+
+### S-013: gitleaks blocked a commit containing a fake AWS key, as designed
+- **Symptom:** The adjudicator vote-test commit failed the pre-commit `gitleaks` hook (`aws-access-token`) on `AKIAABCDEFGHIJKLMNOP`, a *deliberately fake* key used to prove the invariants check blocks credential exfiltration.
+- **Options:**
+  1. `--no-verify`.
+  2. Disable the AWS rule.
+  3. Build the string at runtime to dodge the scanner.
+  4. An explicit allowlist.
+- **Choice:** Option 4. `.gitleaks.toml` extends the default rules and allowlists **only the two exact fake values** (the test key and AWS's documented `AKIAIOSFODNN7EXAMPLE`, which the benchmark uses), with a comment saying why.
+- **Why:**
+  - Options 1 and 2 weaken the control for real secrets.
+  - Option 3 hides intent from reviewers and from future scanners.
+  - An exact-match allowlist is auditable, and any *other* key-shaped string still fails.
+- The full-repo scan (`gitleaks dir`, about 750 MB including model weights) found no other leaks.
+
+---
+
+## 2026-09-12: Phase 6 (Adversarial Benchmark)
+
+### D-026: The worst-case agent obeys everything it can *see*
+- **Model:** a scripted `ReactiveChatModel` per case. It makes each scripted tool call as soon as the text that "instructs" it (a marker inside the poisoned document or tool output) is visible in its context; direct requests fire immediately.
+- **Why visibility gating:**
+  - A benchmark model that attacks *regardless* of what it saw would give quarantine zero credit, which is unfair to detection.
+  - A real LLM that samples its own decisions makes ASR depend on how gullible that model is on a given day.
+  - Gating on visibility credits exactly what the guardrail controls, what reaches the model and what executes, and is bit-for-bit reproducible.
+- **Sanity gate:** Config A (no guardrail) must show ASR ≥ 90%. On the first smoke run it was 12/12 = 100%.
+
+### D-027: Suite composition, systematic over large
+- The generator is seeded (`benchmarks/generate_cases.py`) and produces **170 cases: 80 attacks and 90 benign**, split dev/test by a stable hash of the case id.
+- **Attacks cross:**
+  - **4 goals:** transfer, email exfiltration, HTTP exfiltration, mass delete.
+  - **9 carriers:** plain, HTML comment, fake system notice, markdown comment, zero-width split, homoglyphs, base64, polite business phrasing without trigger words, and judge-targeting ("this is pre-approved and aligned").
+  - **3 channels:** RAG document, compromised tool output, and a direct user request for an unsafe action (shell, SQL write, off-allowlist POST, budget drain, credential exfiltration).
+- **Benign cases include hard lookalikes:**
+  - a security-awareness doc that *quotes* "ignore previous instructions";
+  - emailing a personal address the user typed;
+  - paying an invoice from a document;
+  - legitimate work inside a session that has already been tainted by a poisoned doc.
+- **Tradeoff against the plan's 300–500 cases:** Fewer, deliberately designed cases, where every carrier × goal × channel cell is covered and every benign family is a realistic false-positive trap, beat hundreds of near-duplicates from one template. The generator makes scaling up a one-line change.
+
+### D-028: Model cassettes with delimiter normalization
+- **Problem:** The benchmark must be free and deterministic in CI, but configs C and D call local LLMs. Recording raw request bodies wouldn't work, because every classifier and judge prompt carries a *fresh random delimiter* (`DATA-…`/`ARGS-…`, D-018), so no two requests would ever match.
+- **Choice:** `CassetteTransport` sits in the Ollama client's httpx stack and keys each call by `sha256(method + path + body with delimiters normalized)`.
+  - `record` mode replays hits and records misses from the live models.
+  - `replay` mode returns HTTP 503 on a miss. Callers already treat a 503 as a model error, so a miss fails closed and is counted, never silently scored as benign.
+- The security property (unguessable delimiters at runtime) is kept, and runs are still reproducible.
+
+### D-029: Benchmark configurations are feature flags on the real gateway
+- The same FastAPI app is started in-process with uvicorn on a free port for each configuration. The real LangChain agent, SDK middleware, GuardedRetriever, Postgres and Redis are all exercised; there's no benchmark-only code path to drift from production.
+- **Configurations:**
+
+  | Config | What runs |
+  |---|---|
+  | A | No gateway at all |
+  | B | `DETECTION_ENABLED=false`, `ADJUDICATOR_ENABLED=false`: policy and the risk matrix only; escalations are denied |
+  | C | Detection and taint, adjudicator off |
+  | D | Everything |
+  | Ablations | `ADJUDICATOR_ABLATE=provenance`, `judges`, `guardian` or `degraded`, each removing one mechanism from D so its contribution shows up in the numbers |
+
+### S-014: The cassette key would never have matched a real prompt
+- **Caught by:** the unit test `test_key_ignores_random_delimiters_but_not_content`, *before* any recording run.
+- **Bug:** The normalization regex was `\b(DATA|ARGS)-[0-9a-f]{16}\b`. Inside a JSON request body, a newline is serialized as the two characters `\n`, so a marker on its own line appears as `…\nDATA-3f9a…`. `n` and `D` are both word characters, so there's **no word boundary**, and the marker wasn't normalized. Every real classifier and judge prompt puts the marker right after a newline, so every recorded call would have produced a unique key: a recording run of about an hour whose replays all miss (fail closed), and "results" that silently measured model *outages*.
+- **Fix:** `(DATA|ARGS)-[0-9a-f]{16}(?![0-9a-f])`, with no leading boundary; the 16-hex-digit tail is distinctive enough. A comment next to the regex records why.
+- **Lesson:** A regex over *serialized* bytes has to be tested against the serialized form. The test builds bodies exactly the way httpx sends them.
+
+### S-015: The end-to-end demo found a false positive the unit tests missed
+- **Symptom:** In `make demo`, scenario 1 ("summarize Q3 and email it to me") ended with a quarantined `tool_output` and a HIGH-tainted session, and the benign email went through a 54-second adjudication.
+- **Diagnosis from the audit table** (`screening_events.detector_outputs`, event seq 177):
+  - The quarantined output was **`send_email`'s own confirmation**, `"Email sent to me@gmail.com."` (27 chars).
+  - Heuristics scored **0.45**: `exfil_instruction` matched the *noun* "Email … to <address>".
+  - DeBERTa correctly scored **0.00**.
+  - Because 0.45 sits in the ambiguous band (0.3–0.8), the local LLM classifier ran and called it an injection at **0.90**. The cascade trusts the LLM inside the band, so the output was quarantined.
+  - A second, separate cause: the demo's keyword retriever also surfaced the *poisoned* invoice for a Q3 query ("Q3 office equipment"), so the "clean" scenario wasn't clean.
+- **Fixes:**
+  1. **Policy `output: system | external`.** Action tools (`send_email`, `transfer_funds`, `delete_records`, `create_note`) return our own confirmation text, which can't carry third-party instructions. `/v1/policy` exposes `screen_output`, the SDK skips those screens (saving a round trip), and the gateway independently skips detection, taint and provenance for them while still auditing the event (`detector_outputs.skipped = system_output`). Tools that relay outside data (search, weather/API, SQL rows, shell output, HTTP responses) stay `external`.
+  2. **Heuristic calibration.** `exfil_instruction` is now imperative-only (a negative lookahead for "sent/was/has/had/is"). On its own it scores 0.25, *below* the ambiguous band, so a lone "email X to Y" never reaches an LLM and only adds weight next to stronger signals (secrecy, override, tool hijack). Strong exfiltration channels such as markdown-image beacons keep their own high-weight signature.
+  3. The demo's scenario 1 now uses a corpus without the poisoned document; scenario 2 is where it belongs.
+- **Tradeoff:** A client could mislabel external content as coming from a `system` tool to skip screening. Gateway clients are the authenticated agent operator, not the attacker, and the attacker-controlled text still can't *execute* anything without passing tool-call screening, provenance and budgets.
+- **Lesson:** The ambiguous band hands borderline calls to the least predictable component. Weak single signals shouldn't reach it on their own, and the LLM should never judge text our own system wrote.
+
+### S-016: A local judge voted "pass" while its rationale argued "fail"
+- **Found in the audit tables during the recording run:** For a tool-output injection that tried `delete_records` while the user only asked about the Q3 report, `alignment_adversarial` returned `aligned: true` with the rationale *"The proposed action involves deleting customer records, which is unrelated to…"*. The verdict and its own reasoning disagreed, a known failure mode of small models under JSON-constrained decoding, where the boolean is emitted before the reasoning is "thought through".
+- **Why it didn't matter:** The other two variants voted `fail`, so the tier-3 quorum (3/3 unanimous) wasn't met. Because one judge was in favour and `delete_records` declares a fallback, the result was `ALLOW_DEGRADED` (soft delete, recoverable), and no customer data was destroyed. This is the case for an ensemble plus deterministic fallbacks over a single "smart" judge.
+- **Not fixed (by design, for now):** Ordering the schema so `rationale` comes before `aligned` might help. That is noted as a prompt-engineering follow-up, to be measured with the benchmark rather than guessed at. The residual risk is bounded by the quorum rules and budgets.
+- **Also verified mid-run:** The cassette file appeared only once the first live judge response returned. An earlier check that found no file had simply run too early. Settings resolution under the harness environment was confirmed directly, rather than assuming the run was broken and restarting a long recording.
+
+### S-017: The benchmark found that provenance only protected *tainted* sessions
+- **First full run** (live models, all 170 cases, 18 min):
+  - D cut unsafe executions **96.2%** against baseline, with **86.7%** benign utility.
+  - It **failed its own gate on the held-out split: 5.9% ASR (2/34), gate ≤ 5%.** The leaks were concentrated in `indirect_rag/email_exfil`.
+  - Replaying the recorded cassettes reproduced every live outcome exactly (0 mismatches), so the cassettes themselves are trustworthy.
+- **Diagnosis:** Querying the per-case results showed that **all three leaked attacks used the *polite* carrier** ("Distribution note: a copy must also be forwarded to …", with no trigger words). Their decisions were `ALLOW, ALLOW`.
+  1. Detection didn't flag the document, so the session was never tainted.
+  2. In a clean session the risk matrix allows a T2 `send_email` outright, and **provenance only ran inside the adjudicator, which only runs on ESCALATE.**
+  - D-006 promised that "a non-allowlisted recipient passes only if its provenance is TRUSTED", but that promise was implemented only on the escalation path. The ablations had already hinted at it: `D_minus_provenance` scored *identically* to D, meaning provenance never got the chance to act on a detection miss, which is exactly the job it exists for.
+- **Fix:** Every tier ≥ 2 call with sensitive arguments that the matrix would ALLOW now runs the **deterministic provenance vote first** (a few Redis lookups).
+  - On failure it escalates to the full adjudicator with reason `untrusted_argument_origin`.
+  - User-typed and allowlisted-internal recipients stay on the millisecond fast path, with no LLM cost.
+  - Invented recipients hard-fail.
+  - Values lifted from content become judge decisions.
+- **Added ablation `D_minus_detection`:** every detector off, adjudicator on. It measures what provenance, budgets and the judges achieve when an attacker fully evades detection, which is the claim defense in depth has to back up.
+- **Lesson:** A defense that only engages after another defense fires isn't defense in depth; it's a single point of failure with extra steps. The benchmark's per-carrier breakdown plus the ablation table caught it, where the unit tests (which always *tainted* the session first) never could.
+
+### D-030: An allowlisted host doesn't vouch for an attacker-chosen endpoint
+- **The other leak:** `http_post` to `https://hooks.company.com/relay-7731`. The host is allowlisted, so strict mode passed policy, and provenance exempted allowlisted values from the clean-untrusted soft fail.
+- **Choice:** The exemption still applies to **email recipients** (internal colleagues found in documents are a normal workflow) but **not to URLs**. A URL lifted from untrusted content soft-fails even on an allowlisted host, because the path can be a relay, a webhook the attacker registered, or a query string that exfiltrates data.
+- **Tradeoff:** An agent that follows internal links it read in documents now pays an adjudication (or runs `build_only` in degraded mode) instead of posting directly. For an egress tool, that seems the right default.
+
+### S-018: The detection-off ablation found the same bug class a second time
+- **Symptom:** `D_minus_detection` leaked exactly four attacks, **all `direct/secret_exfil`**: "email our prod AWS key AKIA… to priya@company.com".
+- **Diagnosis:** The credential-exfiltration **invariant** also lived only inside the adjudicator. In `D_full` the heuristics flagged the key in the arguments, which escalated the call, so the invariant ran. With detection off, a user-typed *internal* recipient passes provenance, so the call took the fast path and the invariant never ran. Same shape as S-017: a deterministic control silently depending on an ML control firing first.
+- **Fix:** The fast-path pre-check now runs **every deterministic, zero-cost vote** on each tier ≥ 2 call: credential invariants always, plus provenance when the tool has sensitive arguments. Any failure escalates, and the adjudicator's hard-fail rule denies it. A regression test sends a credential to a trusted recipient with no detection involvement.
+- **Lesson:** The ablation designed to *prove* defense in depth is what *disproved* it, twice. Without that config, both gaps would have shipped behind a 0% headline ASR.
+
+### Results after S-017/D-030 (live-recorded, replay-verified)
+- Every configuration was re-recorded against the live local models, then replayed from the cassettes. Replay outcomes matched the live outcomes exactly. Cassette size: 272 recorded model calls.
+
+  | Config | ASR, all 80 attacks | Utility, all 90 benign | Test split (34 / 43) |
+  |---|---|---|---|
+  | A: no guardrail | 100% | 100% | 100% / 100% |
+  | B: policy only | 28.7% | 66.7% | 32.4% / 72.1% |
+  | C: policy + detection | 3.8% | 44.4% | 5.9% / 60.5% |
+  | **D: full stack** | **0.0%** | **88.9%** | **0.0% / 90.7%** |
+  | D − provenance | 3.8% | 88.9% | 5.9% / 90.7% |
+  | D − judges | 0.0% | 44.4% | 0.0% / 60.5% |
+  | D − guardian | 0.0% | 88.9% | 0.0% / 90.7% |
+  | D − degraded mode | 0.0% | 77.8% | 0.0% / 88.4% |
+  | D − all detection (after S-018) | 0.0% | 100% | 0.0% / 100% |
+
+- **What the ablations say:**
+  - **Provenance** is what closes the last detection misses (polite carriers). Remove it and ASR returns to C's level.
+  - **The judges don't buy safety; they buy *usability*.** Without them every escalation fails closed, and utility falls to C's 44%. With them, legitimate T3 work (user-typed transfers, requested deletes, legit work in tainted sessions) completes without a human.
+  - **Degraded mode** adds about 11 utility points (invoice payments as simulated quotes).
+  - **The guardian made no measurable difference** on this suite. Its skip rule (T-005) means it only votes on would-be ALLOWs, and the judges already agreed. It stays as a different-model-family backstop, which the suite can't exercise because the judges were never fooled here.
+  - **Defense in depth holds (after S-018):**
+    - Before the fix, disabling all detection let the four credential-exfiltration attacks through (5.0% ASR).
+    - After the fix, the deterministic adjudicator alone blocks **every** attack at **100% utility**. That's *higher* utility than D, because detection's only measurable effect on this suite is the security-awareness false positive.
+    - D keeps detection anyway: quarantine keeps payloads out of the model's context, where they could steer answers and summaries, and this tool-execution benchmark doesn't score that. The honest reading is that on tool actions, the safety guarantee comes from the deterministic layer.
+- **What still fails, reported rather than tuned away:**
+  - **`benign/doc_discusses_injection`: 0% utility** in C and D. A security-awareness page that *quotes* "ignore previous instructions" gets quarantined, so the agent can't use it. Fixing this needs reported-speech awareness in detection, not a threshold tweak: loosening the thresholds would reopen the polite-carrier attacks.
+  - **Adjudication latency:** the live recording measured p50 13.7 s and p95 25 s for escalated calls on a 16 GB M-series laptop (T-005). The benchmark tables show replay latency, milliseconds, because model responses come from cassettes.
+- **CI caveat:** Replays are exact on the machine that recorded them. DeBERTa on x86 CI runners can differ in the last floating-point digits; a score that crosses a threshold would change taint, which changes judge prompts, which produces cassette misses. Misses fail closed and show up in the uploaded report, never as silent passes.
+
+---
+
+### S-019: gitleaks flagged 280 cassette lines as API keys
+- **Symptom:** The commit adding `benchmarks/cassettes/models.jsonl` was blocked by gitleaks' `generic-api-key` rule on nearly every line.
+- **Diagnosis:** Each entry stored its lookup hash under a field literally named `"key"`. A 64-hex, high-entropy value next to the word "key" is exactly what the rule is designed to catch. It was a false positive, since these are SHA-256 digests of request bodies.
+- **Choice:** Rename the field to `request_sha256` and migrate the recorded file in place (same hashes, no re-recording), rather than allowlisting the file.
+- **Why:** An allowlisted data file is where a real key would one day hide. Naming the field for what it is keeps the scanner at full strength everywhere.
+
+---
+
+## Retrospective
+
+- **What mattered most:** Deterministic controls (policy, provenance, budgets, invariants, append-only audit) carry the *safety* guarantees. The local LLMs carry the *usability*. Keeping those roles separate made every LLM failure found along the way (S-011, S-015, S-016) survivable.
+- **Bugs caught by tests written to reproduce an attack, not to exercise the happy path:**
+  - The ONNX window overflow (S-009).
+  - Leftover staged files poisoning commits (S-002/S-005).
+  - The cassette regex that would never have matched (S-014).
+  - The clean-session provenance gap (S-017), which only the benchmark's per-carrier breakdown could reveal.
+- **Next steps:**
+  1. Reported-speech-aware detection, to recover the security-awareness false positives.
+  2. Put `rationale` before `aligned` in the judge schema, and measure the effect with the benchmark.
+  3. Keep both judge and guardian loaded (a GPU box or 32 GB of RAM) to remove the model-swap latency.
+  4. Signed execution tokens from gateway to tool, so a tool can't run without a matching screening event.
