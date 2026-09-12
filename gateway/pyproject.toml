@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "FastAPI gateway that screens LLM agent inputs, documents and tool calls."
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.14",
+    "asyncpg>=0.30",
     "fastapi>=0.115",
+    "pydantic-settings>=2.6",
+    "redis>=5.2",
+    "sqlalchemy[asyncio]>=2.0",
     "uvicorn[standard]>=0.32",
 ]
 
