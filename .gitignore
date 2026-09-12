@@ -1,0 +1,36 @@
+# --- Secrets: never commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Models / large artifacts ---
+models/weights/
+*.onnx
+*.safetensors
+*.gguf
+*.bin
+
+# --- Benchmark outputs ---
+benchmarks/out/
+
+# --- OS / editors ---
+.DS_Store
+.idea/
+.vscode/
