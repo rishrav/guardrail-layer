@@ -129,7 +129,14 @@ class GuardrailClient:
     def _store_tiers(self, data: Mapping[str, Any]) -> dict[str, int]:
         self.tool_tiers = {tool["name"]: int(tool["tier"]) for tool in data["tools"]}
         self.fail_open_tiers = frozenset(data.get("fail_open_tiers", self.fail_open_tiers))
+        self.unscreened_outputs = frozenset(
+            tool["name"] for tool in data["tools"] if not tool.get("screen_output", True)
+        )
         return self.tool_tiers
+
+    def screens_output(self, tool_name: str) -> bool:
+        """False only for tools the policy marks as returning system-generated confirmations."""
+        return tool_name not in getattr(self, "unscreened_outputs", frozenset())
 
     # ------------------------------------------------------------------ sync API
     def refresh_policy(self) -> dict[str, int]:

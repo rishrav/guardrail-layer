@@ -16,6 +16,7 @@ class ToolSummary(BaseModel):
     description: str
     fallback: str | None
     sensitive_args: list[str]
+    screen_output: bool
 
 
 class PolicySummary(BaseModel):
@@ -40,6 +41,7 @@ async def get_active_policy(
                 description=tool.description,
                 fallback=tool.fallback,
                 sensitive_args=sorted(tool.sensitive_args),
+                screen_output=tool.screens_output,
             )
             for name, tool in sorted(tools.items())
         ],

@@ -248,7 +248,15 @@ class ScreeningPipeline:
     ) -> ScreenResponse:
         start = time.perf_counter()
         await repo.ensure_session(db, req.session_id, req.agent_id, req.user_id)
-        detection = await self._detect(req.content)
+        source_tool = (
+            self.policy.document.tools.get(req.source or "")
+            if event_type is EventType.TOOL_OUTPUT
+            else None
+        )
+        # Confirmation text our own action tools produce can't carry third-party instructions;
+        # screening it only produced false positives (S-015). It is still audited.
+        system_output = source_tool is not None and not source_tool.screens_output
+        detection = None if system_output else await self._detect(req.content)
         decision, reasons = Decision.ALLOW, []
         if detection and detection.flagged:
             reasons.append(
@@ -263,7 +271,7 @@ class ScreeningPipeline:
             if trust_label is TrustLabel.UNTRUSTED:
                 decision = Decision.QUARANTINE
 
-        recorded = await self._record_provenance(
+        recorded = system_output or await self._record_provenance(
             req.session_id,
             req.content,
             trusted=trust_label is TrustLabel.TRUSTED,
@@ -284,7 +292,11 @@ class ScreeningPipeline:
             decision=decision,
             risk_score=detection.score if detection else 0.0,
             reasons={"items": [r.model_dump() for r in reasons]},
-            detector_outputs=detection.to_json() if detection else {},
+            detector_outputs=(
+                detection.to_json()
+                if detection
+                else ({"skipped": "system_output"} if system_output else {})
+            ),
             policy_version=self.policy_version,
             latency_ms=latency,
         )

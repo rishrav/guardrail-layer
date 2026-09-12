@@ -47,6 +47,14 @@ class ToolPolicy(BaseModel):
     args: dict[str, ArgSpec] = Field(default_factory=dict)
     fallback: str | None = None
     budget: str | None = None
+    # "system": the tool returns our own confirmation text ("Email sent to ..."), never
+    # third-party content, so its output isn't screened as untrusted input. Tools that relay
+    # outside data (search results, API responses, DB rows, command output) stay "external".
+    output: Literal["external", "system"] = "external"
+
+    @property
+    def screens_output(self) -> bool:
+        return self.output == "external"
 
     @property
     def sensitive_args(self) -> dict[str, ArgSpec]:

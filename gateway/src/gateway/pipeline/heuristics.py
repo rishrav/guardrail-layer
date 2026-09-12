@@ -88,9 +88,11 @@ BASE_SIGNATURES: tuple[Signature, ...] = (
     ),
     _sig(
         "exfil_instruction",
-        r"\b(send|email|forward|post|upload|leak|exfiltrate)\b.{0,60}?\b(to|at)\b\s*"
-        r"([\w.+-]+@[\w-]+\.[\w.]+|https?://\S+)",
-        0.45,
+        # Imperative only: "Email sent to x@y.com" / "email was forwarded to" are confirmations.
+        # Weight sits below the ambiguous band on its own (S-015); it only adds up with others.
+        r"\b(send|e-?mail|forward|post|upload|leak|exfiltrate)\b(?!\s+(sent|was|has|had|is)\b)"
+        r".{0,60}?\b(to|at)\b\s*([\w.+-]+@[\w-]+\.[\w.]+|https?://\S+)",
+        0.25,
         AttackType.EXFILTRATION,
     ),
     _sig(

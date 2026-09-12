@@ -31,6 +31,7 @@ tools:
   create_note:
     tier: 1
     description: Create a private note for the user.
+    output: system
     args:
       title: {type: string, required: true, max_length: 200}
       body: {type: string, max_length: 10000}
@@ -38,6 +39,7 @@ tools:
   send_email:
     tier: 2
     description: Send an email on the user's behalf.
+    output: system
     fallback: create_draft
     budget: emails_per_session
     args:
@@ -76,6 +78,7 @@ tools:
   transfer_funds:
     tier: 3
     description: Transfer money from the user's account to a destination account.
+    output: system
     fallback: simulate
     budget: transfer_amount_per_session
     args:
@@ -86,6 +89,7 @@ tools:
   delete_records:
     tier: 3
     description: Delete records from a table by id.
+    output: system
     fallback: soft_delete
     budget: deletes_per_session
     args:

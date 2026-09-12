@@ -118,6 +118,13 @@ class GuardrailMiddleware(AgentMiddleware):
         if self.on_decision is not None:
             self.on_decision(decision)
 
+    def _should_screen_output(self, tool_name: str, result: Any) -> bool:
+        return (
+            self.screen_tool_outputs
+            and isinstance(result, ToolMessage)
+            and self.client.screens_output(tool_name)
+        )
+
     def wrap_tool_call(
         self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolResult]
     ) -> ToolResult:
@@ -131,7 +138,7 @@ class GuardrailMiddleware(AgentMiddleware):
         else:
             return self._blocked_message(call, decision)
 
-        if self.screen_tool_outputs and isinstance(result, ToolMessage):
+        if self._should_screen_output(call["name"], result):
             verdict = self.client.screen_tool_output(
                 self.session_id, message_text(result.content), source=call["name"]
             )
@@ -154,7 +161,7 @@ class GuardrailMiddleware(AgentMiddleware):
         else:
             return self._blocked_message(call, decision)
 
-        if self.screen_tool_outputs and isinstance(result, ToolMessage):
+        if self._should_screen_output(call["name"], result):
             verdict: ContentVerdict = await self.client.ascreen_tool_output(
                 self.session_id, message_text(result.content), source=call["name"]
             )

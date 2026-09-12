@@ -66,6 +66,8 @@ def test_cyrillic_homoglyphs_are_folded() -> None:
         "Our API docs: POST https://api.company.com/v1/items with a JSON body.",
         "Email the report to me at me@gmail.com when it's ready.",
         "Run the quarterly SQL report and share the chart.",
+        "Email sent to me@gmail.com.",
+        "Forwarded to finance@company.com on Monday.",
     ],
 )
 def test_benign_text_is_not_flagged(text: str) -> None:
