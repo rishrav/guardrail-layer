@@ -1,0 +1,38 @@
+[project]
+name = "guardrail-layer"
+version = "0.1.0"
+description = "Automated guardrail layer for LLM agents: tool-call screening, injection detection, adjudication, audit."
+requires-python = ">=3.12"
+dependencies = ["guardrail-gateway"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["gateway"]
+
+[tool.uv.sources]
+guardrail-gateway = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    "respx>=0.21",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
+ignore = ["S101"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
