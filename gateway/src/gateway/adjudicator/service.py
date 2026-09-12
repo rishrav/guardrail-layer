@@ -84,7 +84,10 @@ class Adjudicator:
             if origin is Origin.UNTRUSTED_FLAGGED:
                 hard = True
                 notes.append(f"{name} value appears only in content flagged as an injection")
-            elif origin is Origin.UNTRUSTED_CLEAN and not (allowlisted or numeric):
+            # An allowlisted *host* doesn't vouch for an attacker-chosen *endpoint* on it (D-030).
+            elif origin is Origin.UNTRUSTED_CLEAN and not (
+                (allowlisted and spec.type != "url") or numeric
+            ):
                 soft = True
                 notes.append(f"{name} value came from untrusted content, not the user")
             elif origin is Origin.NOVEL and spec.novel == "fail" and not allowlisted:

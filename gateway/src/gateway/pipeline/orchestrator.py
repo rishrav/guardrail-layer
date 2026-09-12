@@ -166,6 +166,28 @@ class ScreeningPipeline:
             decision = Decision.DENY
         else:
             decision = risk.decide(result.tier, tainted=tainted, flagged=flagged)
+            if (
+                decision is Decision.ALLOW
+                and self.adjudicator is not None
+                and result.tool is not None
+                and result.tier >= 2
+                and result.tool.sensitive_args
+            ):
+                # An untainted session doesn't prove where a recipient, URL or account came from:
+                # polite injections evade detection (S-017). The deterministic provenance check
+                # costs milliseconds, so it gates every sensitive tier-2+ call.
+                precheck = await self.adjudicator.provenance_vote(
+                    str(req.session_id), result.tool, req.args, set(result.deferred_allowlist_args)
+                )
+                if precheck.failed:
+                    decision = Decision.ESCALATE
+                    reasons.append(
+                        Reason(
+                            stage="provenance",
+                            code="untrusted_argument_origin",
+                            message=precheck.rationale,
+                        )
+                    )
             if decision is Decision.ESCALATE and self.adjudicator is not None:
                 adjudication = await self.adjudicator.adjudicate(
                     str(req.session_id), req.tool_name, req.args, result, taint_state
