@@ -87,3 +87,55 @@ Format:
   - Canonical JSON uses sorted keys.
   - `created_at` is set in the application in UTC, instead of by the database default, before hashing.
   - The integration test calls `expire_all()` to force a real reload from the DB before verifying.
+
+---
+
+## 2026-09-12: Phase 2 (Gateway API + Policy Engine)
+
+### D-006: Allowlists come in two modes, `strict` and `or_trusted`
+- **Context:** A hard domain allowlist on `send_email.to` would block "email this to my personal gmail", a legitimate request. With no allowlist at all, "email it to attacker@evil.io" becomes easy.
+- **Choice:** Each argument declares an `allowlist_mode`.
+  - `strict` (for `http_post.url`): a non-allowlisted host is a hard policy DENY.
+  - `or_trusted` (for `send_email.to`): the policy stage *defers* the check (`deferred_allowlist_args`). The adjudicator then passes the value only if it is allowlisted **or** its provenance traces to trusted user input.
+- **Why:** This keeps the deterministic guarantee (an attacker-sourced recipient can never pass) without breaking legitimate one-off recipients.
+
+### D-007: With no adjudicator wired in, an ESCALATE becomes DENY
+- In Phase 2 the adjudicator doesn't exist yet. `PipelineConfig.unresolved_escalation` defaults to `DENY`, with the reason code `escalation_unresolved`.
+- **Tradeoff:** Until Phase 5 every T3 call is denied, which is useless for real work but safe. The same switch drives benchmark configuration C ("policy + detection, escalations denied").
+
+### D-008: The audit policy key is `version + sha256[:12]`
+- **Problem:** Someone can edit `policies/default.yaml` without bumping `version:`, and two different rule sets would then share one audit label.
+- **Choice:** Audit rows reference `"<version>+<first 12 hex of file sha256>"`, and the full YAML text is stored in `policies` on startup. Any past decision can be traced to the exact rules that produced it.
+
+### D-009: Lookalike-domain matching
+- `host == d or host.endswith("." + d)`. A naive `endswith(d)` would accept `evilcompany.com`, and substring matching would accept `api.company.com.evil.io`. Both are parametrized in the unit tests, along with the query-string trick `evil.io/?next=api.company.com`.
+
+### S-004: Cached async engine plus multiple TestClients meant "attached to a different loop"
+- **Symptom (anticipated during design, then guarded against):** Each `TestClient` runs the app on its own event loop, but `get_engine()` and `get_redis()` are `lru_cache` singletons. A pooled asyncpg connection created on one loop breaks when the next client reuses it.
+- **Fix:**
+  - The app lifespan disposes the engine, closes Redis and calls `cache_clear()` on shutdown, so every app lifetime starts clean.
+  - Integration tests share one module-scoped client instead of creating nested clients.
+
+### S-005: Leftover staged files poisoned the next commit (again)
+- **Symptom:** A whole batch of commits failed on an ASYNC240 lint error in `main.py`, even though the working-tree `main.py` had already been fixed with `asyncio.to_thread`.
+- **Diagnosis:** The same trap as S-002. The earlier failed commit left the *old* `main.py` staged. The next `git add <other files> && git commit` included it, and pre-commit linted the staged blob, not the working-tree file.
+- **Fix:** A commit helper that runs `git reset` (clearing the index) before `git add <exact paths>`, so every commit contains only the files it names. Lesson: in a chained script, a failed commit is not a no-op; it leaves state behind.
+
+### D-010: The SDK duplicates wire types instead of importing the gateway's
+- **Options:**
+  1. A shared `guardrail-contracts` package.
+  2. The SDK imports `gateway.schemas`.
+  3. Duplicate the small set of types.
+- **Choice:** Option 3, for now.
+- **Why:**
+  - Option 2 drags FastAPI and SQLAlchemy into every agent process.
+  - Option 1 is the "right" answer at scale, but it's a third package to version for about 60 lines of enums and dataclasses.
+- **Mitigation:** A contract test compares the SDK and gateway `Decision` enums.
+
+### D-011: The SDK's failure semantics depend on what is being screened
+- Gateway unreachable:
+  - **Tool calls:** follow the tool's *cached* policy tier. Tiers 0–1 fail open (configurable) and tiers 2–3 are denied. **Unknown tools count as tier 3.**
+  - **Untrusted content:** quarantined.
+  - **User input:** allowed, because the user is the principal and their later tool calls are still screened.
+- **Why the SDK caches tiers (`GET /v1/policy`):** Without them, an outage forces a choice between "deny everything", which breaks read-only agents, and "allow everything", which is an easy bypass (knock the gateway over, then act). Caching tiers gives graded behavior without trusting the model.
+- **Tradeoff:** A policy change during an outage isn't seen until the next refresh.
