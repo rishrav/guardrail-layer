@@ -48,6 +48,7 @@ class Adjudicator:
         *,
         thresholds: Thresholds | None = None,
         llm_timeout_s: float = 60.0,
+        ablate: frozenset[str] = frozenset(),
     ) -> None:
         self.policy = policy
         self.ledger = ledger
@@ -56,6 +57,10 @@ class Adjudicator:
         self.guardian = guardian
         self.thresholds = thresholds or Thresholds()
         self.llm_timeout_s = llm_timeout_s
+        self.ablate = ablate  # evaluation only: see ADJUDICATOR_ABLATE
+
+    def _has_fallback(self, tool: ToolPolicy) -> bool:
+        return bool(tool.fallback) and "degraded" not in self.ablate
 
     async def provenance_vote(
         self,
@@ -64,6 +69,8 @@ class Adjudicator:
         args: Mapping[str, Any],
         not_allowlisted: set[str],
     ) -> Vote:
+        if "provenance" in self.ablate:
+            return Vote("provenance", Verdict.PASS, 1.0, rationale="ablated", raw={"origins": {}})
         origins: dict[str, str] = {}
         hard, soft, notes = False, False, []
         for name, spec in tool.sensitive_args.items():
@@ -118,7 +125,7 @@ class Adjudicator:
         hypothetical = aggregate(
             tool.tier,
             [*prior, *votes, Vote("guardian", Verdict.PASS)],
-            has_fallback=bool(tool.fallback),
+            has_fallback=self._has_fallback(tool),
             thresholds=self.thresholds,
         )
         if hypothetical.decision is not Decision.ALLOW:
@@ -163,7 +170,7 @@ class Adjudicator:
             votes.extend(await self._model_votes(packet, tool, votes))
 
         result = aggregate(
-            tool.tier, votes, has_fallback=bool(tool.fallback), thresholds=self.thresholds
+            tool.tier, votes, has_fallback=self._has_fallback(tool), thresholds=self.thresholds
         )
         decision, rule, reservation = result.decision, result.rule, None
         if decision is Decision.ALLOW:

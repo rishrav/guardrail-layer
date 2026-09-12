@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -38,6 +39,18 @@ class Settings(BaseSettings):
     adjudicator_models_enabled: bool = Field(True, alias="ADJUDICATOR_MODELS_ENABLED")
     adjudicator_timeout_s: float = Field(60.0, alias="ADJUDICATOR_TIMEOUT_S")
     guardian_risk: str = Field("unethical_behavior", alias="GUARDIAN_RISK")
+
+    # Benchmark and evaluation switches. Production keeps the defaults.
+    detection_enabled: bool = Field(True, alias="DETECTION_ENABLED")
+    adjudicator_ablate_raw: str = Field("", alias="ADJUDICATOR_ABLATE")
+    model_cassette_path: str | None = Field(None, alias="MODEL_CASSETTE_PATH")
+    model_cassette_mode: Literal["record", "replay"] = Field("replay", alias="MODEL_CASSETTE_MODE")
+
+    @property
+    def adjudicator_ablate(self) -> frozenset[str]:
+        """Adjudicator parts to switch off for ablation studies: provenance, judges,
+        guardian, degraded."""
+        return frozenset(p.strip() for p in self.adjudicator_ablate_raw.split(",") if p.strip())
 
     @property
     def fail_open_tiers(self) -> frozenset[int]:

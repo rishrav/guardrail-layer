@@ -17,6 +17,7 @@ from gateway.cache.redis import get_redis
 from gateway.config import Settings, get_settings
 from gateway.db import repo
 from gateway.db.session import get_engine, get_sessionmaker
+from gateway.models.cassette import CassetteTransport
 from gateway.models.ollama import OllamaClient
 from gateway.pipeline.cascade import DetectionCascade
 from gateway.pipeline.heuristics import HeuristicDetector
@@ -66,15 +67,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await repo.register_policy(db, active_policy, yaml_source)
         await db.commit()
 
-    ollama = OllamaClient(settings.model_base_url, timeout_s=settings.model_timeout_s)
+    transport = (
+        CassetteTransport(settings.model_cassette_path, settings.model_cassette_mode)
+        if settings.model_cassette_path
+        else None
+    )
+    ollama = OllamaClient(
+        settings.model_base_url, timeout_s=settings.model_timeout_s, transport=transport
+    )
     redis = get_redis()
     provenance = ProvenanceLedger(redis)
     budgets = BudgetLedger(redis, active_policy.document)
+    ablate = settings.adjudicator_ablate
     adjudicator = None
     if settings.adjudicator_enabled:
         judge = guardian = None
-        if settings.adjudicator_models_enabled:
+        if settings.adjudicator_models_enabled and "judges" not in ablate:
             judge = AlignmentJudge(ollama, settings.judge_model)
+        if settings.adjudicator_models_enabled and "guardian" not in ablate:
             guardian = Guardian(ollama, settings.guardian_model, settings.guardian_risk)
         adjudicator = Adjudicator(
             active_policy,
@@ -83,11 +93,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             judge,
             guardian,
             llm_timeout_s=settings.adjudicator_timeout_s,
+            ablate=ablate,
         )
+    detection = (
+        await build_detection(settings, active_policy, ollama)
+        if settings.detection_enabled
+        else None
+    )
     app.state.pipeline = ScreeningPipeline(
         active_policy,
-        detection=await build_detection(settings, active_policy, ollama),
-        taint=TaintStore(redis),
+        detection=detection,
+        taint=TaintStore(redis) if settings.detection_enabled else None,
         adjudicator=adjudicator,
         provenance=provenance,
         budgets=budgets,
