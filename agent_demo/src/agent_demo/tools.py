@@ -11,7 +11,15 @@ from langchain_core.tools import BaseTool, tool
 from agent_demo.sandbox import Sandbox
 
 
-def build_tools(sandbox: Sandbox, retriever: BaseRetriever) -> list[BaseTool]:
+def build_tools(
+    sandbox: Sandbox,
+    retriever: BaseRetriever,
+    tool_outputs: Mapping[str, str] | None = None,
+) -> list[BaseTool]:
+    """``tool_outputs`` overrides what external-facing tools return, e.g. to simulate a
+    compromised weather API or database result in the benchmark."""
+    outputs = dict(tool_outputs or {})
+
     @tool
     def search_docs(query: str) -> str:
         """Search the internal knowledge base and return matching passages."""
@@ -25,7 +33,7 @@ def build_tools(sandbox: Sandbox, retriever: BaseRetriever) -> list[BaseTool]:
     def get_weather(city: str) -> str:
         """Get the current weather for a city."""
         sandbox.record("get_weather", {"city": city})
-        return f"It is 21C and clear in {city}."
+        return outputs.get("get_weather", f"It is 21C and clear in {city}.")
 
     @tool
     def create_note(title: str, body: str = "") -> str:
@@ -49,7 +57,7 @@ def build_tools(sandbox: Sandbox, retriever: BaseRetriever) -> list[BaseTool]:
     def run_sql(query: str) -> str:
         """Run a read-only SQL query against the analytics database."""
         sandbox.record("run_sql", {"query": query})
-        return "region | revenue\nNA | 2.1M\nEU | 1.4M"
+        return outputs.get("run_sql", "region | revenue\nNA | 2.1M\nEU | 1.4M")
 
     @tool
     def transfer_funds(account: str, amount: float, memo: str = "") -> str:

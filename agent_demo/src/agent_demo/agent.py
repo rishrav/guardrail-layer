@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +42,7 @@ def build_demo_agent(
     session_id: str | None = None,
     screen_tool_outputs: bool = True,
     on_decision: Callable[[ToolDecision], None] | None = None,
+    tool_outputs: Mapping[str, str] | None = None,
 ) -> DemoAgent:
     """Build the demo agent. Passing ``client=None`` gives the unguarded baseline."""
     session_id = session_id or str(uuid.uuid4())
@@ -69,7 +70,7 @@ def build_demo_agent(
 
     agent = create_agent(
         model=model,
-        tools=build_tools(sandbox, base_retriever),
+        tools=build_tools(sandbox, base_retriever, tool_outputs),
         system_prompt=SYSTEM_PROMPT,
         middleware=middleware,
     )
