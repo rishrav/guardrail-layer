@@ -48,6 +48,42 @@ Format:
 ### S-001: Blank toolchain at project start
 - **Problem:** The machine had Python 3.13 but no `uv`, Docker, Ollama, `gitleaks` or `pre-commit`, and no global git identity.
 - **Fix:**
+  - Linked `docker-compose` into `~/.docker/cli-plugins`; without that, Homebrew's docker CLI doesn't recognize `docker compose`.
   - Installed the tools with Homebrew.
   - Set git identity *repo-locally*, so the global config stays untouched.
   - Pinned the project to Python ≥3.12, and uv manages the interpreter.
+
+### S-002: The pre-commit Ruff hook kept rejecting correct commits
+- **Symptom:** A commit containing `tests/unit/test_health.py` failed twice with "files were modified by this hook". Ruff merged the `fastapi` and `gateway` import blocks.
+- **Diagnosis:** Two issues combined:
+  1. Ruff running in pre-commit's isolated environment can't tell that `gateway` (a `src/` layout package) is first-party code, so it sorts it as third-party.
+  2. Pre-commit **stashes unstaged changes** before running hooks. The `known-first-party` fix in `pyproject.toml` was unstaged, so it was invisible to the hook.
+  - Side effect: the failed commit left its files staged, and the *next* commit silently swept them in.
+- **Fix:**
+  - Committed the lint config *before* the code that depends on it.
+  - Split the accidental combined commit with `git reset --soft`.
+  - Now run `ruff check --fix` and `ruff format` before staging.
+
+### D-005: Tamper evidence through a hash chain plus a DB trigger, not only DB permissions
+- **Context:** The audit log must show that nobody edited or deleted a decision.
+- **Options:**
+  1. Revoke UPDATE/DELETE from the application role.
+  2. Hash-chain the rows.
+  3. Use an external append-only store (WORM bucket, ledger DB).
+- **Choice:** Options 1 and 2, done as a **trigger** that blocks UPDATE, DELETE and TRUNCATE on the audit tables, plus a `sha256(prev_hash ‖ canonical_json(row))` chain with a `verify` walker.
+- **Why:**
+  - Roles are easy to misconfigure in dev, while a trigger protects every connection.
+  - A superuser can still disable triggers, and the hash chain *detects* that; there's an integration test that bypasses the trigger with `session_replication_role = replica` to prove it.
+  - An external ledger is out of scope for a local stack.
+
+### T-002: Serialized audit appends
+- A chain needs exactly one "previous row". Concurrent requests would fork it, so appends take a transaction-scoped `pg_advisory_xact_lock`.
+- **Gave up:** parallel audit writes; audit inserts are effectively single-file.
+- **Got:** a linear, verifiable chain. At expected volumes (tens to hundreds of screens per second) one indexed insert under a lock is not the bottleneck; the LLM calls are. If it ever becomes one, the fix is to chain per session or per shard.
+
+### S-003: Timestamps and JSONB must round-trip to the same bytes
+- **Risk:** A hash computed in Python before the insert has to match the row after Postgres returns it, but JSONB reorders keys and `server_default=now()` isn't known client-side.
+- **Fix:**
+  - Canonical JSON uses sorted keys.
+  - `created_at` is set in the application in UTC, instead of by the database default, before hashing.
+  - The integration test calls `expire_all()` to force a real reload from the DB before verifying.
