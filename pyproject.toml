@@ -38,6 +38,9 @@ ignore = ["S101"]
 [tool.ruff.lint.per-file-ignores]
 # Signature regexes read better unbroken than split mid-pattern.
 "gateway/src/gateway/pipeline/heuristics.py" = ["E501"]
+"gateway/src/gateway/adjudicator/extractors.py" = ["E501"]
+# Truth tables stay one case per line so every row is readable at a glance.
+"tests/unit/adjudicator/test_aggregator.py" = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["gateway", "guardrail_sdk", "agent_demo", "benchmarks"]
