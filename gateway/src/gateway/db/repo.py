@@ -5,13 +5,18 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.db.hashchain import GENESIS_HASH, ChainVerification, compute_row_hash, verify_chain
-from gateway.db.models import AgentSession, ScreeningEvent
+from gateway.db.models import AgentSession, ScreeningEvent, ToolCall
+from gateway.db.models import Policy as PolicyRow
+
+if TYPE_CHECKING:
+    from gateway.pipeline.policy import Policy
 
 # Arbitrary constant used as the Postgres advisory-lock key for serializing chain appends.
 AUDIT_CHAIN_LOCK_KEY = 0x6A7D_1A11
@@ -38,6 +43,43 @@ def _event_record(event: ScreeningEvent) -> dict[str, Any]:
     record["prev_hash"] = event.prev_hash
     record["row_hash"] = event.row_hash
     return record
+
+
+def policy_key(policy: Policy) -> str:
+    """Audit key: declared version plus content hash, so an edited-but-unbumped file differs."""
+    return f"{policy.version}+{policy.source_sha256[:12]}"
+
+
+async def register_policy(db: AsyncSession, policy: Policy, yaml_source: str) -> str:
+    """Store the policy text and mark it as the single active version."""
+    key = policy_key(policy)
+    await db.execute(update(PolicyRow).where(PolicyRow.version != key).values(active=False))
+    await db.execute(
+        insert(PolicyRow)
+        .values(version=key, yaml_source=yaml_source, active=True)
+        .on_conflict_do_update(index_elements=[PolicyRow.version], set_={"active": True})
+    )
+    return key
+
+
+async def record_tool_call(
+    db: AsyncSession,
+    *,
+    event_id: uuid.UUID,
+    tool_name: str,
+    risk_tier: int,
+    args: dict[str, Any],
+) -> ToolCall:
+    call = ToolCall(
+        event_id=event_id,
+        tool_name=tool_name,
+        risk_tier=risk_tier,
+        args=args,
+        execution_mode="none",
+    )
+    db.add(call)
+    await db.flush()
+    return call
 
 
 async def ensure_session(
