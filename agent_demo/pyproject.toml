@@ -1,0 +1,16 @@
+[project]
+name = "guardrail-agent-demo"
+version = "0.1.0"
+description = "Demo LangChain agent with sandboxed canary tools and a poisoned RAG corpus."
+requires-python = ">=3.12"
+dependencies = [
+    "guardrail-sdk[langchain]",
+    "langchain-ollama>=1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_demo"]

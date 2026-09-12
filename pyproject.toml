@@ -3,17 +3,18 @@ name = "guardrail-layer"
 version = "0.1.0"
 description = "Automated guardrail layer for LLM agents: tool-call screening, injection detection, adjudication, audit."
 requires-python = ">=3.12"
-dependencies = ["guardrail-gateway", "guardrail-sdk"]
+dependencies = ["guardrail-gateway", "guardrail-sdk[langchain]", "guardrail-agent-demo"]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["gateway", "sdk"]
+members = ["gateway", "sdk", "agent_demo"]
 
 [tool.uv.sources]
 guardrail-gateway = { workspace = true }
 guardrail-sdk = { workspace = true }
+guardrail-agent-demo = { workspace = true }
 
 [dependency-groups]
 dev = [
