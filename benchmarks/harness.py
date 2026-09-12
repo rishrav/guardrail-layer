@@ -51,6 +51,12 @@ ABLATIONS: dict[str, dict[str, str] | None] = {
     f"D_minus_{part}": {**_FULL, "ADJUDICATOR_ABLATE": part}
     for part in ("provenance", "judges", "guardian", "degraded")
 }
+# Defense in depth: what the adjudicator alone achieves if every detector is bypassed.
+ABLATIONS["D_minus_detection"] = {
+    **_FULL,
+    "DETECTION_ENABLED": "false",
+    "LLM_CLASSIFIER_ENABLED": "false",
+}
 ALL_CONFIGS = {**CONFIGS, **ABLATIONS}
 
 

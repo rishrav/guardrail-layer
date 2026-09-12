@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  DATABASE_URL: postgresql+asyncpg://guardrail:ci-only-password@localhost:5432/guardrail
+  REDIS_URL: redis://localhost:6379/0
+  GUARDRAIL_API_KEY: ci-only-gateway-key
+  # CI has no local LLM server: detection runs heuristics + ONNX, adjudicator runs its
+  # deterministic checks, and the benchmark replays recorded model responses (cassettes).
+  LLM_CLASSIFIER_ENABLED: "false"
+  ADJUDICATOR_MODELS_ENABLED: "false"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: guardrail
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: guardrail
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U guardrail" --health-interval 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - name: Cache injection classifier weights
+        uses: actions/cache@v4
+        with:
+          path: models/weights
+          key: models-${{ hashFiles('scripts/pull_models.sh') }}
+      - name: Download injection classifier (ONNX)
+        run: ./scripts/pull_models.sh
+      - name: Migrate
+        working-directory: gateway
+        run: uv run alembic upgrade head
+      - name: Unit + integration tests
+        run: uv run pytest tests -q
+      - name: Adversarial benchmark (held-out split, cassette replay) with regression gates
+        env:
+          ADJUDICATOR_MODELS_ENABLED: "true"
+          LLM_CLASSIFIER_ENABLED: "true"
+        run: uv run pytest benchmarks --split test -q
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: benchmarks/out/

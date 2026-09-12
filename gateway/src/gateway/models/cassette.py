@@ -47,7 +47,7 @@ class CassetteTransport(httpx.AsyncBaseTransport):
             for line in self.path.read_text().splitlines():
                 if line.strip():
                     entry = json.loads(line)
-                    self._store[entry["key"]] = entry
+                    self._store[entry["request_sha256"]] = entry
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         key = cassette_key(request)
@@ -61,7 +61,7 @@ class CassetteTransport(httpx.AsyncBaseTransport):
 
         response = await self.inner.handle_async_request(request)
         await response.aread()
-        entry = {"key": key, "path": request.url.path, "status": response.status_code,
+        entry = {"request_sha256": key, "path": request.url.path, "status": response.status_code,
                  "json": json.loads(response.content or b"null")}  # fmt: skip
         with self._lock:
             self._store[key] = entry
