@@ -48,6 +48,7 @@ known-first-party = ["gateway", "guardrail_sdk", "agent_demo", "benchmarks"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]  # make the top-level `benchmarks` package importable from tests/
 filterwarnings = [
     # Upstream starlette/fastapi TestClient deprecations; not actionable in this repo.
     "ignore::DeprecationWarning:starlette.*",
